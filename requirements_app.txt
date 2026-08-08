@@ -1,0 +1,16 @@
+# Phase 7 — Deployment (Streamlit app) dependencies
+#
+# This is a NEW, separate file from the project's main requirements.txt.
+# It intentionally does NOT include tensorflow/torch/transformers — the
+# deployed app only needs the Phase 4 scikit-learn model + TF-IDF
+# vectorizer, so keeping this list minimal makes deployment (e.g. on
+# Streamlit Community Cloud) fast and lightweight.
+#
+# Install with: pip install -r requirements_app.txt
+# Run with:     streamlit run app.py
+
+streamlit>=1.32
+scikit-learn==1.6.1
+joblib>=1.2
+pandas>=1.5
+numpy>=1.23
