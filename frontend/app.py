@@ -124,7 +124,14 @@ user_text = st.text_area(
     label_visibility="collapsed"
 )
 
-API_URL = "http://localhost:5000/predict"
+import os
+
+BACKEND_URL = os.getenv("BACKEND_URL")
+if not BACKEND_URL:
+    st.error("🚨 Configuration Error: `BACKEND_URL` environment variable is not set. Please configure it in Streamlit Community Cloud.")
+    st.stop()
+
+API_URL = f"{BACKEND_URL.rstrip('/')}/predict"
 
 col1, col2, col3 = st.columns([1, 2, 1])
 

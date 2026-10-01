@@ -2,96 +2,102 @@ from flask import Flask, request, jsonify
 import joblib
 import os
 import sys
+from pathlib import Path
 
-# Add the project root to sys.path to import from training
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(project_root)
+# Setup robust paths
+# backend/app.py is in the backend/ directory, so root is its parent.
+APP_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = APP_DIR.parent
+SRC_DIR = PROJECT_ROOT / "src"
+MODELS_DIR = PROJECT_ROOT / "models"
+
+# Add PROJECT_ROOT to sys.path so we can import src as a module
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from training.preprocess import clean_text
-except ImportError:
-    # Fallback in case of weird execution paths
-    def clean_text(text):
-        import re
-        if not isinstance(text, str): return ""
-        text = text.lower()
-        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-        text = re.sub(r'<.*?>', '', text)
-        text = re.sub(r'[^\w\s]', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
+    from src.preprocess import clean_hinglish_text
+    from src.utils import ID2LABEL
+except ImportError as e:
+    # Fallback to prevent immediate crash if imports fail, though it should be fatal
+    print(f"Error importing from src/: {e}")
+    clean_hinglish_text = None
+    ID2LABEL = {0: "Negative", 1: "Neutral", 2: "Positive"}
 
 app = Flask(__name__)
 
 # Load model and vectorizer at startup
-model_dir = os.path.join(project_root, 'model')
-model_path = os.path.join(model_dir, 'sentiment_model.pkl')
-vectorizer_path = os.path.join(model_dir, 'tfidf_vectorizer.pkl')
+model_path = MODELS_DIR / "logistic_regression.pkl"
+vectorizer_path = MODELS_DIR / "vectorizers" / "tfidf_word_vectorizer.joblib"
 
 MODEL = None
 VECTORIZER = None
 
 try:
-    if os.path.exists(model_path) and os.path.exists(vectorizer_path):
+    if model_path.exists() and vectorizer_path.exists():
         MODEL = joblib.load(model_path)
         VECTORIZER = joblib.load(vectorizer_path)
         print("Model and Vectorizer loaded successfully.")
     else:
-        print("Warning: Model or Vectorizer not found. Prediction will fail.")
+        print(f"Warning: Model or Vectorizer not found at expected paths.")
+        print(f"Model path: {model_path}")
+        print(f"Vectorizer path: {vectorizer_path}")
 except Exception as e:
-    print(f"Error loading model: {e}")
-
-# Label mapping
-SENTIMENT_MAP = {
-    0: "Negative",
-    1: "Neutral",
-    2: "Positive"
-}
+    print(f"Error loading artifacts: {e}")
 
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({"status": "running", "message": "Hinglish Sentiment Analysis API is up and running."})
+    return jsonify({
+        "status": "running",
+        "message": "Hinglish Sentiment Analysis API is up and running."
+    })
 
 @app.route('/predict', methods=['POST'])
 def predict():
     if MODEL is None or VECTORIZER is None:
-        return jsonify({"error": "Model or vectorizer not found. Please train the model first."}), 500
+        return jsonify({"error": "Model artifacts failed to load on server startup."}), 500
 
     try:
-        data = request.get_json()
-        
+        # Strict parsing of JSON
+        if not request.is_json:
+            return jsonify({"error": "Request must be JSON."}), 400
+            
+        data = request.get_json(silent=True)
         if not data or 'text' not in data:
             return jsonify({"error": "Invalid request. Please provide 'text' in JSON body."}), 400
             
         text = data.get('text', '')
-        
-        if not isinstance(text, str) or text.strip() == '':
+        if not isinstance(text, str) or not text.strip():
             return jsonify({"error": "Text cannot be empty."}), 400
             
-        # 1. Clean the text
-        cleaned_str = clean_text(text)
+        # 1. Clean the text (handle missing preprocessing gracefully)
+        if clean_hinglish_text:
+            cleaned_str = clean_hinglish_text(text)
+        else:
+            return jsonify({"error": "Preprocessing module unavailable."}), 500
         
-        if cleaned_str == '':
+        if not cleaned_str.strip():
              return jsonify({"error": "Text contains no valid words after preprocessing."}), 400
              
         # 2. Vectorize
         vectorized_text = VECTORIZER.transform([cleaned_str])
         
         # 3. Predict sentiment and confidence
-        prediction = MODEL.predict(vectorized_text)[0]
+        prediction_idx = int(MODEL.predict(vectorized_text)[0])
         probabilities = MODEL.predict_proba(vectorized_text)[0]
         confidence = float(max(probabilities))
         
-        sentiment_label = SENTIMENT_MAP.get(int(prediction), "Unknown")
+        sentiment_label = ID2LABEL.get(prediction_idx, "Unknown")
         
         return jsonify({
-            "text": text,
             "sentiment": sentiment_label,
             "confidence": round(confidence, 4)
         })
         
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Catch unexpected errors gracefully
+        return jsonify({"error": "An internal error occurred during prediction."}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Listen on 0.0.0.0 for deployment
+    app.run(host='0.0.0.0', port=5000, debug=False)
